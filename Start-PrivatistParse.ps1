@@ -261,16 +261,21 @@ Function sendmail([string] $body)
     if (!$TestRun)
     {
         $config.smtp.to | % { $MailMessage.To.Add((New-Object System.Net.Mail.MailAddress -ArgumentList $_.address,$_.displayName)) }
+        $config.smtp.cc | % { $MailMessage.CC.Add((New-Object System.Net.Mail.MailAddress -ArgumentList $_.address,$_.displayName)) }
     }
     else
     {
-        $testRun = "TestRun enabled. Receivers in 'To' will not receive this testmail!"
+        $testRun = "TestRun enabled. Receivers in 'To' and 'Cc' will not receive this testmail!"
         $testRunTo = "'To' recipients would have been: '$(($config.smtp.to | % { "$($_.displayName) ($($_.address))" }) -join "', '")'"
+        $testRunCc = "'Cc' recipients would have been: '$(($config.smtp.cc | % { "$($_.displayName) ($($_.address))" }) -join "', '")'"
         Write-Host "`n$testRun" -ForegroundColor Cyan
         Write-Log "$testRun" -Level WARNING
         Write-Host "$testRunTo" -ForegroundColor Cyan
         Write-Log "$testRunTo" -Level WARNING
+        Write-Host "$testRunCc" -ForegroundColor Cyan
+        Write-Log "$testRunCc" -Level WARNING
     }
+    
     $MailMessage.Subject = "Privatisteksamen - $Today / $Tomorrow"
     $MailMessage.Body = $body
     $MailMessage.IsBodyHtml = $True
