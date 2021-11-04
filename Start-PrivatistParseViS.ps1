@@ -1,6 +1,6 @@
 ﻿<#
 .Synopsis
-    This script should be run every day after school ends to import .csv and/or .xlsx lists with students that should be removed or added to privatist group
+    This script should be run every day after school ends to import .csv and/or .xlsx (.xls files can be used, but will be converted to .xlsx before used!) lists with students that should be removed or added to privatist group
     If there's a list for today, those students should be removed
     If there's a list for tomorrow, those students should be added
 #>
