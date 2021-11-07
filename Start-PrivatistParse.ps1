@@ -1,8 +1,8 @@
 ﻿<#
 .Synopsis
-    This script should be run every day after school ends to import .csv and/or .xlsx lists with students that should be removed or added to privatist group
-    If there's a list for today, those students should be removed
-    If there's a list for tomorrow, those students should be added
+    This script should be run every day after school ends to import .csv and/or .xlsx (.xls files can be used, but will be converted to .xlsx before used!) lists with students that should be removed or added to privatist group
+    Students with Eksamensdato for today will be removed from Active Directory group
+    Students with Eksamensdato for tomorrow will be added to Active Directory group
 #>
 [CmdletBinding(SupportsShouldProcess = $True)]
 param(
@@ -35,213 +35,183 @@ $orgName = $config.orgName
 # Functions
 ######################################
 
-Function Start-FileParse
+Function Start-StudentParse
 {
     [CmdletBinding(SupportsShouldProcess = $True)]
     param(
         [Parameter(Mandatory = $True)]
+        [string]$Class,
+    
+        [Parameter(Mandatory = $True)]
         [ValidateNotNull()]
-        $FileContent,
+        [string]$SSN,
 
         [Parameter(Mandatory = $True)]
         [ValidateSet("Add", "Remove")]
-        [string]$Action,
-
-        [Parameter(Mandatory = $True)]
-        [string]$Class
+        [string]$Action
     )
 
-    # current person count
-    [int]$CurrentIndex = 1
 
-    # total person count
-    [int]$IndexCount = $FileContent.Count
-    if ($IndexCount -eq 0)
+    # check every Fødselsnummer againt Active Directory
+    Write-Log -Message "##########################################################################"
+
+    # create a new object to contain Person info
+    $Obj = New-Object PSObject
+
+    Write-Host "[$CurrentIndex / $IndexCount] -- [$SSN] -- " -ForegroundColor Green -NoNewline
+    Write-Log -Message "[$CurrentIndex / $IndexCount] -- [$SSN]"
+
+    # check if Fødselsnummer is given
+    if ($SSN -eq $null -or $SSN -eq "")
     {
-        $IndexCount = 1
-    }
-    $Global:TotalIndexCount += $IndexCount
+        Write-Host "[Fødselsnummer er tom! Dette bør sjekkes!]" -ForegroundColor Red
+        Write-Log -Message "[Fødselsnummer er tom! Dette bør sjekkes!]" -Level ERROR
 
-    # failed person count
-    [int]$Failed = 0
+        $Obj | Add-Member NoteProperty Id("failure")
+        $Obj | Add-Member NoteProperty Navn("")
+        $Obj | Add-Member NoteProperty Type("Ikke sjekket: Fødselsnummer er tom! Dette bør sjekkes!")
+        $Obj | Add-Member NoteProperty Eksamensparti($Class)
 
-    if ($IndexCount -gt 0)
-    {
+        $Global:ParsedStudents.Add($obj)
+
+        $Global:TotalInvalidCount += 1
+
         Write-Log -Message "##########################################################################"
+
+        return
     }
 
-    # check every Personid againt Active Directory
-    foreach ($Person in $FileContent)
+    # check that Fødselsnummer has correct number of digits
+    if ($SSN.get_Length() -ne 11)
     {
-        # create a new object to contain Person info
-        $Obj = New-Object PSObject
-
-        [string]$Id = $Person.Personid
-        [string]$Name = $Person."Fullstendig navn"
-
-        Write-Host "[$CurrentIndex / $IndexCount] -- [$Name] -- " -ForegroundColor Green -NoNewline
-        Write-Log -Message "[$CurrentIndex / $IndexCount] -- [$Id - '$Name']"
-
-        # check if Personid is given
-        if ($Id -eq $null -or $Id -eq "")
+        if ($SSN.get_Length() -eq 10)
         {
-            Write-Host "[Personid er tom! Dette bør sjekkes!]" -ForegroundColor Red
-            Write-Log -Message "[Personid er tom! Dette bør sjekkes!]" -Level ERROR
-
-            $Obj | Add-Member NoteProperty Id("failure")
-            $Obj | Add-Member NoteProperty Navn($Name)
-            $Obj | Add-Member NoteProperty Type("Ikke sjekket: Personid er tom! Dette bør sjekkes!")
-            $Obj | Add-Member NoteProperty Klasse($Class)
+            # Fødselsnummer is probably missing a leading 0
+            Write-Host "[Ufullstendig Fødselsnummer. Legger til 0] -- " -ForegroundColor Yellow -NoNewline
+            Write-Log -Message "[Ufullstendig Fødselsnummer. Legger til 0]" -Level WARNING
+            $SSN = "0$SSN"
+        }
+        else
+        {
+            # Fødselsnummer has invalid number of digits. Skip
+            Write-Host "[Ugyldig Fødselsnummer. Skipper '$Name']" -ForegroundColor Red
+            Write-Log -Message "[Ugyldig Fødselsnummer. Skipper '$Name']" -Level ERROR
+            $Obj | Add-Member NoteProperty Id("failure$($SSN)")
+            $Obj | Add-Member NoteProperty Navn("")
+            $Obj | Add-Member NoteProperty Type("Ikke sjekket: Ugyldig Fødselsnummer! Dette bør sjekkes!")
+            $Obj | Add-Member NoteProperty Eksamensparti($Class)
 
             $Global:ParsedStudents.Add($obj)
 
             $Global:TotalInvalidCount += 1
-            $CurrentIndex += 1
 
             Write-Log -Message "##########################################################################"
 
-            continue;
+            return
         }
-
-        Write-Host "[$Id] -- " -ForegroundColor Green -NoNewline
-
-        # check that Personid has correct number of digits
-        if ($Id.get_Length() -ne 11)
-        {
-            if ($Id.get_Length() -eq 10)
-            {
-                # Personid is probably missing a leading 0
-                Write-Host "[Ufullstendig Personid. Legger til 0] -- " -ForegroundColor Yellow -NoNewline
-                Write-Log -Message "[Ufullstendig Personid. Legger til 0]" -Level WARNING
-                $Id = "0$Id"
-            }
-            else
-            {
-                # Personid has invalid number of digits. Skip
-                Write-Host "[Ugyldig Personid. Skipper '$Name']" -ForegroundColor Red
-                Write-Log -Message "[Ugyldig Personid. Skipper '$Name']" -Level ERROR
-                $Obj | Add-Member NoteProperty Id("failure$($Id)")
-                $Obj | Add-Member NoteProperty Navn($Name)
-                $Obj | Add-Member NoteProperty Type("Ikke sjekket: Ugyldig Personid! Dette bør sjekkes!")
-                $Obj | Add-Member NoteProperty Klasse($Class)
-
-                $Global:ParsedStudents.Add($obj)
-
-                $Global:TotalInvalidCount += 1
-                $CurrentIndex += 1
-
-                Write-Log -Message "##########################################################################"
-
-                continue;
-            }
-        }
-
-        Write-Log -Message "[Using $Id]"
-
-        # check if Personid exists in skole.top.no
-        if ($config.ad.enabledUsersOnly)
-        {
-            $User = Get-ADUser -Server $adServer -Filter { employeeNumber -eq $Id -and Enabled -eq $True } -SearchBase $config.ad.searchBase -Properties DistinguishedName,DisplayName
-        }
-        else
-        {
-            $User = Get-ADUser -Server $adServer -Filter { employeeNumber -eq $Id } -SearchBase $config.ad.searchBase -Properties DistinguishedName,DisplayName
-        }
-
-        if ($User)
-        {
-            Write-Host "[Funnet] -- " -ForegroundColor Green -NoNewline
-            Write-Log -Message "[Bruker funnet i AD]"
-
-            $DN = $User.DistinguishedName
-            $DisplayName = $User.DisplayName
-
-            if ($Action -eq "Add")
-            {
-                try
-                {
-                    if (!$TestRun)
-                    {
-                        Add-ADGroupMember -Server $adServer -Identity $Group -Members $DN -Confirm:$false -ErrorAction Stop
-                    }
-                    else
-                    {
-                        Write-Host "[TestRun enabled. No add is made] -- " -ForegroundColor Cyan -NoNewline
-                    }
-                    Write-Host "['$DisplayName' lagt til]" -ForegroundColor Green
-                    Write-Log -Message "['$DisplayName' lagt til i '$Group']"
-                    $Obj | Add-Member NoteProperty Id("success$($Id.Substring(0, 6))******")
-                    $Obj | Add-Member NoteProperty Navn($DisplayName)
-                    $Obj | Add-Member NoteProperty Type("Lagt til i gruppe")
-                    $Obj | Add-Member NoteProperty Klasse($Class)
-
-                    $Global:TotalAddedCount += 1
-                }
-                catch
-                {
-                    Write-Host "['$DisplayName' ble ikke lagt til]" -ForegroundColor Red
-                    Write-Log -Message "['$DisplayName' ikke lagt til i '$Group': $_]" -Level ERROR
-                    $Obj | Add-Member NoteProperty Id("failure$($Id.Substring(0, 6))******")
-                    $Obj | Add-Member NoteProperty Navn($DisplayName)
-                    $Obj | Add-Member NoteProperty Type("Feilet ved innmelding i gruppe")
-                    $Obj | Add-Member NoteProperty Klasse($Class)
-
-                    $Global:TotalFailedCount += 1
-                }
-
-            }
-            elseif ($Action -eq "Remove")
-            {
-                try
-                {
-                    if (!$TestRun)
-                    {
-                        Remove-ADGroupMember -Server $adServer -Identity $Group -Members $DN -Confirm:$false -ErrorAction Stop
-                    }
-                    else
-                    {
-                        Write-Host "[TestRun enabled. No remove is made] -- " -ForegroundColor Cyan -NoNewline
-                    }
-                    Write-Host "['$DisplayName' fjernet]" -ForegroundColor Green
-                    Write-Log -Message "['$DisplayName' fjernet fra '$Group']"
-                    $Obj | Add-Member NoteProperty Id("success$($Id.Substring(0, 6))******")
-                    $Obj | Add-Member NoteProperty Navn($DisplayName)
-                    $Obj | Add-Member NoteProperty Type("Fjernet fra gruppe")
-                    $Obj | Add-Member NoteProperty Klasse($Class)
-
-                    $Global:TotalRemovedCount += 1
-                }
-                catch
-                {
-                    Write-Host "['$DisplayName' ble ikke fjernet]" -ForegroundColor Red
-                    Write-Log -Message "['$DisplayName' ikke fjernet fra '$Group': $_]" -Level ERROR
-                    $Obj | Add-Member NoteProperty Id("failure$($Id.Substring(0, 6))******")
-                    $Obj | Add-Member NoteProperty Navn($DisplayName)
-                    $Obj | Add-Member NoteProperty Type("Feilet ved fjerning fra gruppe")
-                    $Obj | Add-Member NoteProperty Klasse($Class)
-
-                    $Global:TotalFailedCount += 1
-                }
-            }
-        }
-        else
-        {
-            Write-Host "[Ikke funnet]" -ForegroundColor Yellow
-            Write-Log -Message "Bruker eksister ikke i AD" -Level WARNING
-            $Obj | Add-Member NoteProperty Id("$($Id.Substring(0, 6))******")
-            $Obj | Add-Member NoteProperty Navn($Name)
-            $Obj | Add-Member NoteProperty Type("Bruker er ikke elev i $orgName")
-            $Obj | Add-Member NoteProperty Klasse($Class)
-
-            $Global:TotalFailedCount += 1
-        }
-
-        $CurrentIndex += 1
-
-        $Global:ParsedStudents.Add($obj)
-
-        Write-Log -Message "##########################################################################"
     }
+
+    Write-Log -Message "[Using $SSN]"
+
+    # check if Fødselsnummer exists in skole.top.no
+    if ($config.ad.enabledUsersOnly)
+    {
+        $User = Get-ADUser -Server $adServer -Filter { employeeNumber -eq $SSN -and Enabled -eq $True } -SearchBase $config.ad.searchBase -Properties DistinguishedName,DisplayName
+    }
+    else
+    {
+        $User = Get-ADUser -Server $adServer -Filter { employeeNumber -eq $SSN } -SearchBase $config.ad.searchBase -Properties DistinguishedName,DisplayName
+    }
+
+    if ($User)
+    {
+        Write-Host "[Funnet] -- " -ForegroundColor Green -NoNewline
+        Write-Log -Message "[Bruker funnet i AD]"
+
+        $DN = $User.DistinguishedName
+        $DisplayName = $User.DisplayName
+
+        if ($Action -eq "Add")
+        {
+            try
+            {
+                if (!$TestRun)
+                {
+                    Add-ADGroupMember -Server $adServer -Identity $Group -Members $DN -Confirm:$false -ErrorAction Stop
+                }
+                else
+                {
+                    Write-Host "[TestRun enabled. No add is made] -- " -ForegroundColor Cyan -NoNewline
+                }
+                Write-Host "['$DisplayName' lagt til]" -ForegroundColor Green
+                Write-Log -Message "['$DisplayName' lagt til i '$Group']"
+                $Obj | Add-Member NoteProperty Id("success$($SSN.Substring(0, 6))******")
+                $Obj | Add-Member NoteProperty Navn($DisplayName)
+                $Obj | Add-Member NoteProperty Type("Lagt til i gruppe")
+                $Obj | Add-Member NoteProperty Eksamensparti($Class)
+
+                $Global:TotalAddedCount += 1
+            }
+            catch
+            {
+                Write-Host "['$DisplayName' ble ikke lagt til]" -ForegroundColor Red
+                Write-Log -Message "['$DisplayName' ikke lagt til i '$Group': $_]" -Level ERROR
+                $Obj | Add-Member NoteProperty Id("failure$($SSN.Substring(0, 6))******")
+                $Obj | Add-Member NoteProperty Navn($DisplayName)
+                $Obj | Add-Member NoteProperty Type("Feilet ved innmelding i gruppe")
+                $Obj | Add-Member NoteProperty Eksamensparti($Class)
+
+                $Global:TotalFailedCount += 1
+            }
+
+        }
+        elseif ($Action -eq "Remove")
+        {
+            try
+            {
+                if (!$TestRun)
+                {
+                    Remove-ADGroupMember -Server $adServer -Identity $Group -Members $DN -Confirm:$false -ErrorAction Stop
+                }
+                else
+                {
+                    Write-Host "[TestRun enabled. No remove is made] -- " -ForegroundColor Cyan -NoNewline
+                }
+                Write-Host "['$DisplayName' fjernet]" -ForegroundColor Green
+                Write-Log -Message "['$DisplayName' fjernet fra '$Group']"
+                $Obj | Add-Member NoteProperty Id("success$($SSN.Substring(0, 6))******")
+                $Obj | Add-Member NoteProperty Navn($DisplayName)
+                $Obj | Add-Member NoteProperty Type("Fjernet fra gruppe")
+                $Obj | Add-Member NoteProperty Eksamensparti($Class)
+
+                $Global:TotalRemovedCount += 1
+            }
+            catch
+            {
+                Write-Host "['$DisplayName' ble ikke fjernet]" -ForegroundColor Red
+                Write-Log -Message "['$DisplayName' ikke fjernet fra '$Group': $_]" -Level ERROR
+                $Obj | Add-Member NoteProperty Id("failure$($SSN.Substring(0, 6))******")
+                $Obj | Add-Member NoteProperty Navn($DisplayName)
+                $Obj | Add-Member NoteProperty Type("Feilet ved fjerning fra gruppe")
+                $Obj | Add-Member NoteProperty Eksamensparti($Class)
+
+                $Global:TotalFailedCount += 1
+            }
+        }
+    }
+    else
+    {
+        Write-Host "[Ikke funnet]" -ForegroundColor Yellow
+        Write-Log -Message "Bruker eksister ikke i AD" -Level WARNING
+        $Obj | Add-Member NoteProperty Id("$($SSN.Substring(0, 6))******")
+        $Obj | Add-Member NoteProperty Navn($Name)
+        $Obj | Add-Member NoteProperty Type("Bruker er ikke elev i $orgName")
+        $Obj | Add-Member NoteProperty Eksamensparti($Class)
+
+        $Global:TotalFailedCount += 1
+    }
+
+    $Global:ParsedStudents.Add($obj)
 }
 
 Function sendmail([string] $body)
@@ -361,85 +331,22 @@ Write-Host "Using Active Directory group '$Group'" -ForegroundColor Green
 
 # files with this date in its name will be parsed as remove. This date will also be used as log file name
 $Today = $Now.ToShortDateString()
-Write-Host "$Today -- Files with this date will be parsed as remove" -ForegroundColor Green
+Write-Host "$Today -- Candidates with this date as 'Eksamensdato' will be parsed as remove" -ForegroundColor Green
 
 # files with this date in its name will be parsed as add
 $Tomorrow = $Now.AddDays(1).ToShortDateString()
-Write-Host "$Tomorrow -- Files with this date will be parsed as add" -ForegroundColor Green
+Write-Host "$Tomorrow -- Candidates with this date as 'Eksamensdato' will be parsed as add" -ForegroundColor Green
 
-# get files from $Path to remove from Privatister
-$RemoveFiles = Get-ChildItem -Path "$Path\*" -Recurse -Include "*.xlsx","*.csv" | Where { $_.BaseName.Contains($Today) }
+# get files from $Path to parse
+$files = Get-ChildItem -Path "$Path\*" -Recurse -Include "*.xlsx","*.csv","*.xls"
 
-# get files from $Path to add as Privatister
-$AddFiles = Get-ChildItem -Path "$Path\*" -Recurse -Include "*.xlsx","*.csv" | Where { $_.BaseName.Contains($Tomorrow) }
-
-if ($RemoveFiles -or $AddFiles)
-{
-    # create log folder
-    $LogSubfolder = ""
-    if ($Now.Month -ge 5 -and $Now.Month -le 6) # summer exam (lastYear_year_vår)
-    {
-        $LogSubfolder = "$(($Now.Year - 1))_$($Now.Year)_vår"
-    }
-    elseif ($Now.Month -ge 11 -and $Now.Month -le 12) # winter exam (year_nextYear_jul)
-    {
-        $LogSubfolder = "$($Now.Year)_$(($Now.Year + 1))_jul"
-    }
-    else # Privatist exam outside of regular exam times
-    {
-        if ($Now.Month -ge 8) # fall-winter exam
-        {
-            $LogSubfolder = "$($Now.Year)_$(($Now.Year + 1))_$($Now.Month)"
-        }
-        elseif ($Now.Month -ge 1 -and $Now.Month -le 4) # winter-spring exam
-        {
-            $LogSubfolder = "$(($Now.Year - 1))_$($Now.Year)_$($Now.Month)"
-        }
-    }
-
-    if ($TestRun)
-    {
-        Add-LogTarget -Name CMTrace -Configuration @{ Path = "$LogSubfolder\$($today)_TestRun.log" }
-    }
-    else
-    {
-        Add-LogTarget -Name CMTrace -Configuration @{ Path = "$LogSubfolder\$today.log" }
-    }
+if (!$files -or ($files | Measure-Object | Select-Object -ExpandProperty Count) -eq 0) {
+    Write-Host "No files found"
+    return
 }
 
-# go through csv files from $Path to remove from Privatister
-if ($RemoveFiles)
-{
-    Write-Host "$($RemoveFiles.Count) files will be parsed for removal" -ForegroundColor Green
-    Write-Log -Message "##########################################################################"
-    Write-Log -Message "##########################################################################"
-    Write-Log -Message "##########################################################################"
-    Write-Log -Message "$($RemoveFiles.Count) files will be parsed for removal"
-}
-else
-{
-    Write-Host "0 files will be parsed for removal" -ForegroundColor Green
-    #Write-Log -Message "0 files will be parsed for removal"
-}
-
-# go through csv files from $Path to add as Privatister
-if ($AddFiles)
-{
-    Write-Host "$($AddFiles.Count) files will be parsed for adding" -ForegroundColor Green
-    if (!$RemoveFiles)
-    {
-        Write-Log -Message "##########################################################################"
-        Write-Log -Message "##########################################################################"
-        Write-Log -Message "##########################################################################"
-    }
-    Write-Log -Message "$($AddFiles.Count) files will be parsed for adding"
-}
-else
-{
-    Write-Host "0 files will be parsed for adding" -ForegroundColor Green
-    #Write-Log -Message "0 files will be parsed for adding"
-}
-
+# object to contain students to parse
+$Global:StudentsToParse = [System.Collections.Generic.List[PSObject]]::new()
 # object to contain parsed students; added, removed and failed
 $Global:ParsedStudents = [System.Collections.Generic.List[PSObject]]::new()
 [int]$Global:TotalIndexCount = 0
@@ -448,56 +355,119 @@ $Global:ParsedStudents = [System.Collections.Generic.List[PSObject]]::new()
 [int]$Global:TotalRemovedCount = 0
 [int]$Global:TotalFailedCount = 0
 
-############################
-# parsing of csv files
-############################
-
-# go through all Privatister to remove
-foreach ($File in $RemoveFiles)
-{
-    Write-Host "`r`nRemove privatister from: '$($File.Name)'`r`n" -ForegroundColor Green
-    Write-Log -Message "Remove privatister from: '$($File.Name)'"
-
-    if ($File.Extension -eq ".csv")
-    {
-        # changing encoding from ANSI to UTF-8
-        $FileContent = Get-Content -Path $File.FullName
-        $FileContent | Set-Content -Encoding UTF8 -Path $File.FullName
-
-        $fileContent = Import-Csv -Path $File.FullName -Delimiter ';' -Encoding UTF8
+foreach ($file in $files) {
+    if ($file.Extension -eq ".xls") {
+        try {
+            ConvertTo-ExcelXlsx -Path $file.FullName -ErrorAction Stop
+            Write-Host "Converted 'xls' to 'xlsx' ($($file.FullName))" -ForegroundColor Green
+            Remove-Item -Path $file.FullName -Force -Confirm:$False # TODO: Instead of removing it, move it to same folder as finished ones
+            $filePath = "$($file.FullName)x"
+        }
+        catch {
+            Write-Host "Failed to convert 'xls' to 'xlsx' ($($file.FullName)) : $_" -ForegroundColor Red
+            continue
+        }
     }
-    elseif ($File.Extension -eq ".xlsx")
-    {
-        $fileContent = Import-Excel -Path $File.FullName -HeaderName "Personid","Fullstendig navn"
+    else {
+        $filePath = $file.FullName
     }
 
-    Start-FileParse -FileContent $fileContent -Action Remove -Class $File.BaseName
+    $fileContent = Import-Excel -Path $filePath
+    $fileContent | Where { $_.Eksamensdato -eq $Today } | ForEach-Object {
+        $obj = New-Object PSObject @{
+            Eksamensparti = $_.Eksamensparti
+            Eksamensdato = $_.Eksamensdato
+            Fødselsnummer = $_.Fødselsnummer
+            Remove = $true
+        }
+
+        $Global:StudentsToParse.Add($obj)
+    }
+    $fileContent | Where { $_.Eksamensdato -eq $Tomorrow } | ForEach-Object {
+        $obj = New-Object PSObject @{
+            Eksamensparti = $_.Eksamensparti
+            Eksamensdato = $_.Eksamensdato
+            Fødselsnummer = $_.Fødselsnummer
+            Add = $true
+        }
+
+        $Global:StudentsToParse.Add($obj)
+    }
 }
 
-# go through all Privatister to remove
-foreach ($File in $AddFiles)
+if ($Global:StudentsToParse.Count -eq 0)
 {
-    Write-Host "`r`nAdd privatister from: '$($File.Name)'`r`n" -ForegroundColor Green
-    Write-Log -Message "Add privatister from: '$($File.Name)'"
+    Write-Host "Files don't contain dates for today/tomorrow" -ForegroundColor Yellow
+    return
+}
 
-    if ($File.Extension -eq ".csv")
+# create log folder
+$LogSubfolder = ""
+if ($Now.Month -ge 5 -and $Now.Month -le 6) # summer exam (lastYear_year_vår)
+{
+    $LogSubfolder = "$(($Now.Year - 1))_$($Now.Year)_vår"
+}
+elseif ($Now.Month -ge 11 -and $Now.Month -le 12) # winter exam (year_nextYear_jul)
+{
+    $LogSubfolder = "$($Now.Year)_$(($Now.Year + 1))_jul"
+}
+else # Privatist exam outside of regular exam times
+{
+    if ($Now.Month -ge 8) # fall-winter exam
     {
-        # changing encoding from ANSI to UTF-8
-        $FileContent = Get-Content -Path $File.FullName
-        $FileContent | Set-Content -Encoding UTF8 -Path $File.FullName
+        $LogSubfolder = "$($Now.Year)_$(($Now.Year + 1))_$($Now.Month)"
+    }
+    elseif ($Now.Month -ge 1 -and $Now.Month -le 4) # winter-spring exam
+    {
+        $LogSubfolder = "$(($Now.Year - 1))_$($Now.Year)_$($Now.Month)"
+    }
+}
 
-        $fileContent = Import-Csv -Path $File.FullName -Delimiter ';' -Encoding UTF8
-    }
-    elseif ($File.Extension -eq ".xlsx")
-    {
-        $fileContent = Import-Excel -Path $File.FullName -HeaderName "Personid","Fullstendig navn"
-    }
-    
-    Start-FileParse -FileContent $fileContent -Action Add -Class $File.BaseName
+if ($TestRun)
+{
+    Add-LogTarget -Name CMTrace -Configuration @{ Path = "$LogSubfolder\$($today)_TestRun.log" }
+}
+else
+{
+    Add-LogTarget -Name CMTrace -Configuration @{ Path = "$LogSubfolder\$today.log" }
+}
+
+# current person count
+[int]$currentIndex = 1
+
+$studentsToRemove = $Global:StudentsToParse | Where { $_.Remove -and $_.Remove -eq $True  }
+Write-Host "`n$($studentsToRemove.Count) candidates will be parsed for removal" -ForegroundColor Green
+Write-Log -Message "##########################################################################"
+Write-Log -Message "##########################################################################"
+Write-Log -Message "$($studentsToRemove.Count) candidates will be parsed for removal"
+
+# total person count to remove
+[int]$indexCount = $studentsToRemove | Measure-Object | Select-Object -ExpandProperty Count
+$Global:TotalIndexCount += $indexCount
+foreach ($student in $studentsToRemove) {
+    Start-StudentParse -Class $student.Eksamensparti -SSN $student.Fødselsnummer -Action Remove
+    $CurrentIndex += 1
+}
+
+# current person count
+[int]$currentIndex = 1
+
+$studentsToAdd = $Global:StudentsToParse | Where { $_.Add -and $_.Add -eq $True }
+Write-Host "`n$($studentsToAdd.Count) candidates will be parsed for adding" -ForegroundColor Green
+Write-Log -Message "##########################################################################"
+Write-Log -Message "##########################################################################"
+Write-Log -Message "$($studentsToAdd.Count) candidates will be parsed for adding"
+
+# total person count to add
+[int]$indexCount = $studentsToAdd | Measure-Object | Select-Object -ExpandProperty Count
+$Global:TotalIndexCount += $indexCount
+foreach ($student in $studentsToAdd) {
+    Start-StudentParse -Class $student.Eksamensparti -SSN $student.Fødselsnummer -Action Add
+    $CurrentIndex += 1
 }
 
 ###############################
-# sending mail rapports 
+# sending mail reports 
 ###############################
 
 if ($Global:ParsedStudents.Count -gt 0)
@@ -537,7 +507,5 @@ if ($Global:ParsedStudents.Count -gt 0)
     Write-Host "Kandidater ikke elev i $($orgName): $($Global:TotalFailedCount)" -ForegroundColor Yellow
     Write-Log -Message "Kandidater ikke elev i $($orgName): $($Global:TotalFailedCount)" -Level WARNING
 }
-else
-{
-    #Write-Log -Message "No work to be done..."
-}
+
+# TODO: Check all files for dates in the future. If a file doesn't have anymore dates into the future, move the file to another directory, keeping the same directory syntax
