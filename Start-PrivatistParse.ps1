@@ -1,6 +1,6 @@
 ﻿<#
 .Synopsis
-    This script should be run every day after school ends to import .csv and/or .xlsx (.xls files can be used, but will be converted to .xlsx before used!) lists with students that should be removed or added to privatist group
+    This script should be run every day after school ends to import .csv and/or .xlsx (.xls files can be used, but will automatically be converted to .xlsx before used!) lists with students that should be removed or added to privatist group
     Students with Eksamensdato for today will be removed from Active Directory group
     Students with Eksamensdato for tomorrow will be added to Active Directory group
 #>
@@ -19,8 +19,17 @@ param(
 
 $config = (Get-Content -Path "config.json" -Encoding UTF8) | ConvertFrom-Json
 
-# folder path to the .csv and/or .xlsx files
-$Path = $config.Path
+# folder path to exam files
+$path = $config.path
+
+# extensions supported
+$includedExtensions = $config.includedExtensions
+
+# excluded folders
+$excludedFolders = $config.excludedFolders
+
+# folder where finished lists should be moved
+$finishedFolder = $config.finishedFolder
 
 # students will be added/removed from this active directory group
 $group = $config.ad.group
@@ -312,6 +321,79 @@ Function sendmail([string] $body)
     }
 }
 
+Function Get-ExamFiles {
+    $files = Get-ChildItem -Path "$path\*" -Recurse -Include $includedExtensions
+
+    $excludedFolders | ForEach-Object {
+        $excludedFolder = $_
+        $files = $files | Where-Object { $_.DirectoryName -notlike "*\$excludedFolder*" }
+    }
+
+    return $files
+}
+
+Function Test-ForFutureDates {
+    param(
+        [Parameter(Mandatory = $True)]
+        [string[]]$ExamFiles
+    )
+
+    Write-Log -Message "##########################################################################"
+    Write-Log -Message "##########################################################################"
+    Write-Host "`nChecking if any of the $($files.Count) exam file(s) should be moved to '$finishedFolder'" -ForegroundColor Cyan
+    Write-Log -Message "Checking if any of the $($files.Count) exam file(s) should be moved to '$finishedFolder'"
+
+    $ExamFiles | ForEach-Object {
+        $file = $_
+        if ($file.ToLower().EndsWith(".xls")) {
+            # file has already been converted. Add 'x' to use .xlsx converted file
+            $file = "$($file)x"
+        }
+
+        [bool]$containsFutureDates = $False
+        $fileContent = Import-Excel -Path $file
+        $fileContent | ForEach-Object {
+            $thenSplit = $_.Eksamensdato.Split(".")
+            $then = Get-Date -Year $thenSplit[2] -Month $thenSplit[1] -Day $thenSplit[0]
+            if (($then - $now).TotalHours -gt 0.99) { $containsFutureDates = $True }
+        }
+
+        if (!$containsFutureDates) {
+            Move-ExamFile -File $file
+        }
+    }
+}
+
+Function Move-ExamFile {
+    param(
+        [Parameter(Mandatory = $True)]
+        [string]$File
+    )
+
+    # move file to "$finishedFolder" with current folder syntax
+    $relativeName = $File.Replace("$path\", "")
+    $relativeDirectories = Split-Path -Path $relativeName -Parent
+    $relativeFileName = Split-Path -Path $relativeName -Leaf
+    $originalPath = "$path\$relativeDirectories"
+    $movePath = "$path\$finishedFolder\$relativeDirectories"
+    try {
+        New-Item -Path $movePath -ItemType Directory -Force -Confirm:$False -ErrorAction Stop | Out-Null
+        Move-Item -Path $file -Destination $movePath -Force -Confirm:$False -ErrorAction Stop
+        Write-Host "File moved to '$movePath\$relativeFileName'" -ForegroundColor Green
+        Write-Log -Message "File moved to '$movePath\$relativeFileName'"
+
+        if ((Get-ChildItem -Path $originalPath).Count -eq 0) {
+            Remove-Item -Path $originalPath -Force -Confirm:$False -ErrorAction SilentlyContinue
+            Write-Host "Removed folder '$originalPath' since there's no more files/directories here" -ForegroundColor Green
+            Write-Log -Message "Removed folder '$originalPath' since there's no more files/directories here"
+        }
+    }
+    catch {
+        Write-Host "Failed to add/move file '$file' : $_" -ForegroundColor Yellow
+        Write-Log -Message "Failed to add/move file '$file' : $_" -Level WARNING
+    }
+}
+
 ######################################
 # variables used in this script
 ######################################
@@ -337,12 +419,30 @@ Write-Host "$Today -- Candidates with this date as 'Eksamensdato' will be parsed
 $Tomorrow = $Now.AddDays(1).ToShortDateString()
 Write-Host "$Tomorrow -- Candidates with this date as 'Eksamensdato' will be parsed as add" -ForegroundColor Green
 
-# get files from $Path to parse
-$files = Get-ChildItem -Path "$Path\*" -Recurse -Include "*.xlsx","*.csv","*.xls"
+# get files from $path to parse, excluding $excludedFolders and includes only $includedExtensions
+$files = Get-ExamFiles
 
 if (!$files -or ($files | Measure-Object | Select-Object -ExpandProperty Count) -eq 0) {
     Write-Host "No files found"
     return
+}
+
+# if theres any .xls files here, convert them
+$xlsFiles = $files | Where { $_.Extension -eq ".xls" }
+if ($xlsFiles) {
+    $xlsFiles | ForEach-Object {
+        $file = $_
+        try {
+            ConvertTo-ExcelXlsx -Path $file.FullName -Force -ErrorAction Stop
+            Write-Host "Converted 'xls' to 'xlsx' ($($file.FullName))" -ForegroundColor Green
+            Move-ExamFile -File $file.FullName
+        }
+        catch {
+            Write-Host "Failed to convert 'xls' to 'xlsx' ($($file.FullName)) : $_" -ForegroundColor Red
+        }
+    }
+
+    $files = Get-ExamFiles
 }
 
 # object to contain students to parse
@@ -355,24 +455,10 @@ $Global:ParsedStudents = [System.Collections.Generic.List[PSObject]]::new()
 [int]$Global:TotalRemovedCount = 0
 [int]$Global:TotalFailedCount = 0
 
+Write-Host ""
 foreach ($file in $files) {
-    if ($file.Extension -eq ".xls") {
-        try {
-            ConvertTo-ExcelXlsx -Path $file.FullName -ErrorAction Stop
-            Write-Host "Converted 'xls' to 'xlsx' ($($file.FullName))" -ForegroundColor Green
-            Remove-Item -Path $file.FullName -Force -Confirm:$False # TODO: Instead of removing it, move it to same folder as finished ones
-            $filePath = "$($file.FullName)x"
-        }
-        catch {
-            Write-Host "Failed to convert 'xls' to 'xlsx' ($($file.FullName)) : $_" -ForegroundColor Red
-            continue
-        }
-    }
-    else {
-        $filePath = $file.FullName
-    }
-
-    $fileContent = Import-Excel -Path $filePath
+    Write-Host "Checking file '$($file.FullName.Replace($path, ''))'" -ForegroundColor Cyan
+    $fileContent = Import-Excel -Path $file.FullName
     $fileContent | Where { $_.Eksamensdato -eq $Today } | ForEach-Object {
         $obj = New-Object PSObject @{
             Eksamensparti = $_.Eksamensparti
@@ -397,7 +483,7 @@ foreach ($file in $files) {
 
 if ($Global:StudentsToParse.Count -eq 0)
 {
-    Write-Host "Files don't contain dates for today/tomorrow" -ForegroundColor Yellow
+    Write-Host "File(s) don't contain dates for today/tomorrow" -ForegroundColor Yellow
     return
 }
 
@@ -436,35 +522,35 @@ else
 [int]$currentIndex = 1
 
 $studentsToRemove = $Global:StudentsToParse | Where { $_.Remove -and $_.Remove -eq $True  }
-Write-Host "`n$($studentsToRemove.Count) candidates will be parsed for removal" -ForegroundColor Green
-Write-Log -Message "##########################################################################"
-Write-Log -Message "##########################################################################"
-Write-Log -Message "$($studentsToRemove.Count) candidates will be parsed for removal"
+[int]$indexCount = $studentsToRemove | Measure-Object | Select-Object -ExpandProperty Count
+Write-Host "`n$indexCount candidates will be parsed for removal" -ForegroundColor Green
+Write-Log -Message "$indexCount candidates will be parsed for removal"
 
 # total person count to remove
-[int]$indexCount = $studentsToRemove | Measure-Object | Select-Object -ExpandProperty Count
 $Global:TotalIndexCount += $indexCount
 foreach ($student in $studentsToRemove) {
     Start-StudentParse -Class $student.Eksamensparti -SSN $student.Fødselsnummer -Action Remove
     $CurrentIndex += 1
 }
 
+Write-Log -Message "##########################################################################"
+
 # current person count
 [int]$currentIndex = 1
 
 $studentsToAdd = $Global:StudentsToParse | Where { $_.Add -and $_.Add -eq $True }
-Write-Host "`n$($studentsToAdd.Count) candidates will be parsed for adding" -ForegroundColor Green
-Write-Log -Message "##########################################################################"
-Write-Log -Message "##########################################################################"
-Write-Log -Message "$($studentsToAdd.Count) candidates will be parsed for adding"
+[int]$indexCount = $studentsToAdd | Measure-Object | Select-Object -ExpandProperty Count
+Write-Host "`n$indexCount candidates will be parsed for adding" -ForegroundColor Green
+Write-Log -Message "$indexCount candidates will be parsed for adding"
 
 # total person count to add
-[int]$indexCount = $studentsToAdd | Measure-Object | Select-Object -ExpandProperty Count
 $Global:TotalIndexCount += $indexCount
 foreach ($student in $studentsToAdd) {
     Start-StudentParse -Class $student.Eksamensparti -SSN $student.Fødselsnummer -Action Add
     $CurrentIndex += 1
 }
+
+Write-Log -Message "##########################################################################"
 
 ###############################
 # sending mail reports 
@@ -508,4 +594,4 @@ if ($Global:ParsedStudents.Count -gt 0)
     Write-Log -Message "Kandidater ikke elev i $($orgName): $($Global:TotalFailedCount)" -Level WARNING
 }
 
-# TODO: Check all files for dates in the future. If a file doesn't have anymore dates into the future, move the file to another directory, keeping the same directory syntax
+Test-ForFutureDates -ExamFiles ($files | Select-Object -ExpandProperty FullName)
