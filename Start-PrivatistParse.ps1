@@ -18,6 +18,9 @@ param(
 ######################################
 
 $config = (Get-Content -Path "config.json" -Encoding UTF8) | ConvertFrom-Json
+if (!$config) {
+    Write-Error -Message "Failed to load 'config.json'" -ErrorAction Stop
+}
 
 # folder path to exam files
 $path = $config.path
